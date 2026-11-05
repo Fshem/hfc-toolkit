@@ -200,7 +200,7 @@ server <- function(input, output, session) {
       rv$issues <- iss
       rv$ev <- tryCatch(hfc_ml_enumerators(r, rv$iv), error = function(e) NULL)
       rv$enums <- enum_table(r, rv$issues)
-      rv$llm_os <- NULL; rv$llm_brief <- NULL; rv$llm_status <- NULL
+      rv$llm_os <- NULL; rv$llm_brief <- NULL; rv$llm_status <- NULL; rv$coded <- NULL
     }
   })
 
@@ -299,7 +299,16 @@ server <- function(input, output, session) {
       "though respondents sometimes type names into answers). The briefing sends only issue counts per enumerator."),
     uiOutput("llm_status"),
     uiOutput("llm_os_ui"),
-    uiOutput("llm_brief_ui"))
+    uiOutput("llm_brief_ui"),
+    hr(),
+    h5("Evaluate the AI review"),
+    p(class = "text-muted small", "Measure how often the AI agrees with a person. Download the blank coding sheet and code each",
+      "answer yourself before looking at the AI's suggestions (human_action: recode, new category, not an answer or unclear;",
+      "human_choice: the choice or category name). Then upload it here. About 100-200 answers gives a reliable figure."),
+    div(class = "d-flex flex-wrap gap-2 align-items-end",
+      downloadButton("dl_coding_sheet", "Blank coding sheet (CSV)", class = "btn-sm"),
+      fileInput("coded", NULL, accept = ".csv", buttonLabel = "Upload coded sheet", placeholder = "coded CSV", width = "320px")),
+    uiOutput("llm_eval_ui"))
 
   observeEvent(input$llm_os, {
     items <- hfc_llm_specify_items(rv$result)
@@ -325,6 +334,37 @@ server <- function(input, output, session) {
     downloadButton("dl_llm_os", "Suggestions (CSV)", class = "btn-sm mb-2"),
     div(class = "table-responsive", tableOutput("t_llm_os"))) })
   output$t_llm_os <- renderTable(rv$llm_os, striped = TRUE, spacing = "s", na = "")
+  output$dl_coding_sheet <- downloadHandler(function() paste0("other_specify_coding_sheet_", Sys.Date(), ".csv"), function(file) {
+    items <- hfc_llm_specify_items(rv$result, max_items = 300)
+    utils::write.csv(if (is.null(items)) data.frame(note = "No other-specify answers found") else hfc_llm_coding_sheet(items),
+                     file, row.names = FALSE, na = "")
+  })
+  observeEvent(input$coded, {
+    rv$coded <- tryCatch(utils::read.csv(input$coded$datapath, stringsAsFactors = FALSE, check.names = FALSE),
+                         error = function(e) data.frame())
+  })
+  llm_eval <- reactive({ req(rv$coded); if (is.null(rv$llm_os)) return(list(error = "Run the other-specify review first, then upload the coded sheet.")); hfc_llm_evaluate(rv$llm_os, rv$coded) })
+  output$llm_eval_ui <- renderUI({
+    req(rv$coded); e <- llm_eval()
+    if (!is.null(e$error)) return(div(class = "alert alert-warning py-2", e$error))
+    tagList(
+      div(class = "alert alert-success py-2", HTML(sprintf(
+        "On <b>%d</b> hand-coded answers, the AI agreed with the human coder on <b>%.0f%%</b> (Cohen's kappa <b>%.2f</b>).%s",
+        e$n, 100 * e$accuracy, e$kappa,
+        if (is.na(e$choice_agreement)) "" else sprintf(" Where both chose to recode, they picked the same choice %.0f%% of the time (%d answers).", 100 * e$choice_agreement, e$n_choice)))),
+      downloadButton("dl_eval", "Evaluation results (CSV)", class = "btn-sm mb-2"),
+      h6("Human vs AI decisions"), tableOutput("t_eval_cm"),
+      h6("By decision"), tableOutput("t_eval_per"),
+      h6(sprintf("Disagreements (%d)", nrow(e$disagreements))), div(class = "table-responsive", tableOutput("t_eval_dis")))
+  })
+  output$t_eval_cm <- renderTable(llm_eval()$confusion, spacing = "s")
+  output$t_eval_per <- renderTable(llm_eval()$per_action, spacing = "s", na = "")
+  output$t_eval_dis <- renderTable(llm_eval()$disagreements, striped = TRUE, spacing = "s", na = "")
+  output$dl_eval <- downloadHandler(function() paste0("ai_review_evaluation_", Sys.Date(), ".csv"), function(file) {
+    e <- llm_eval(); d <- e$disagreements
+    utils::write.csv(rbind(data.frame(variable = "SUMMARY", answer = sprintf("n=%d; agreement=%.3f; kappa=%.3f", e$n, e$accuracy, e$kappa),
+                                      human = "", human_choice = "", ai = "", ai_choice = ""), d), file, row.names = FALSE, na = "")
+  })
   output$dl_llm_os <- downloadHandler(function() paste0("other_specify_suggestions_", Sys.Date(), ".csv"),
     function(file) utils::write.csv(rv$llm_os, file, row.names = FALSE, na = ""))
   output$llm_brief_ui <- renderUI({ req(rv$llm_brief); tagList(h5("Supervisor briefing"),

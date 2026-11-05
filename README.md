@@ -27,6 +27,9 @@ On top of the rule-based checks, the app adds:
 * **AI review (optional, LLM):** with the user's own Anthropic API key (`app/llm.R`), suggests how to recode
   "other, specify" answers into existing choices and writes a plain-language briefing for supervisors from the
   issue counts. The call is made from the browser; the key is not passed to R or stored.
+  The AI review can be evaluated in the app: download a blank coding sheet, code the answers by hand
+  without looking at the AI suggestions, upload it, and the app reports agreement, Cohen's kappa, results
+  by decision type and every disagreement.
 
 To run it locally:
 

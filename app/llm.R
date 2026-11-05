@@ -115,3 +115,57 @@ hfc_llm_parse_items <- function(json, items) {
   names(out) <- c("variable", "question", "answer", "times given", "suggestion", "choice / category", "reason")
   out[order(out$suggestion, -out$`times given`), ]
 }
+
+# ---- Evaluating the other-specify review against hand coding ---------------------
+# A person codes a blank sheet without seeing the AI's suggestions (blind coding);
+# the app then compares the two and reports agreement and Cohen's kappa.
+
+hfc_llm_actions <- c("recode", "new category", "not an answer", "unclear")
+
+hfc_llm_coding_sheet <- function(items) {
+  data.frame(variable = items$variable, question = items$question, existing_choices = items$choices,
+             answer = items$answer, times_given = items$times, human_action = "", human_choice = "",
+             stringsAsFactors = FALSE)
+}
+
+.norm_action <- function(x) {
+  x <- tolower(trimws(as.character(x)))
+  x[grepl("^recod", x)] <- "recode"
+  x[grepl("^new", x)] <- "new category"
+  x[grepl("not.*answer|^no answer|^invalid|^gibberish", x)] <- "not an answer"
+  x[grepl("^unclear|^unsure|^don", x)] <- "unclear"
+  x[!x %in% hfc_llm_actions] <- NA
+  x
+}
+
+hfc_llm_evaluate <- function(ai, coded) {
+  key <- function(v, a) paste(v, tolower(trimws(a)), sep = "\r")
+  names(coded) <- tolower(gsub("[^A-Za-z]+", "_", names(coded)))
+  need <- c("variable", "answer", "human_action")
+  if (!all(need %in% names(coded)))
+    return(list(error = "The coded sheet needs the columns variable, answer and human_action. Use the blank coding sheet from this tab."))
+  h <- data.frame(k = key(coded$variable, coded$answer), human = .norm_action(coded$human_action),
+                  human_choice = if ("human_choice" %in% names(coded)) as.character(coded$human_choice) else "",
+                  stringsAsFactors = FALSE)
+  h <- h[!is.na(h$human), ]
+  a <- data.frame(k = key(ai$variable, ai$answer), variable = ai$variable, answer = ai$answer,
+                  ai = .norm_action(ai$suggestion), ai_choice = as.character(ai$`choice / category`),
+                  stringsAsFactors = FALSE)
+  m <- merge(a, h, by = "k")
+  m <- m[!is.na(m$ai), ]
+  if (nrow(m) < 10) return(list(error = sprintf("Only %d coded answers match the AI review. Code at least 10 (100 or more gives a reliable figure).", nrow(m))))
+  lv <- hfc_llm_actions
+  cm <- table(factor(m$human, lv), factor(m$ai, lv), dnn = c("Human", "AI"))
+  po <- sum(diag(cm)) / sum(cm); pe <- sum(rowSums(cm) * colSums(cm)) / sum(cm)^2
+  kappa <- if (pe < 1) (po - pe) / (1 - pe) else NA_real_
+  per <- data.frame(action = lv, `human count` = as.integer(rowSums(cm)), `AI count` = as.integer(colSums(cm)),
+                    precision = round(ifelse(colSums(cm) > 0, diag(cm) / colSums(cm), NA), 2),
+                    recall = round(ifelse(rowSums(cm) > 0, diag(cm) / rowSums(cm), NA), 2), check.names = FALSE)
+  both_recode <- m$human == "recode" & m$ai == "recode" & nzchar(trimws(m$human_choice))
+  choice_agree <- if (any(both_recode)) mean(tolower(trimws(m$human_choice[both_recode])) == tolower(trimws(m$ai_choice[both_recode]))) else NA_real_
+  dis <- m[m$human != m$ai | (both_recode & tolower(trimws(m$human_choice)) != tolower(trimws(m$ai_choice))),
+           c("variable", "answer", "human", "human_choice", "ai", "ai_choice")]
+  cmdf <- as.data.frame.matrix(cm); cmdf <- cbind(`Human ↓ / AI →` = rownames(cmdf), cmdf)
+  list(n = nrow(m), accuracy = round(po, 3), kappa = round(kappa, 3), choice_agreement = round(choice_agree, 3),
+       n_choice = sum(both_recode), confusion = cmdf, per_action = per, disagreements = dis)
+}
