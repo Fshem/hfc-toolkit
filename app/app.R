@@ -138,7 +138,7 @@ ui <- page_sidebar(
     ),
     actionButton("run", "Run checks", icon = icon("play"), class = "btn-primary w-100 mt-2"),
     div(class = "form-text mt-3",
-        if (in_browser) "Runs entirely in your browser. Your data is not uploaded to any server."
+        if (in_browser) "The checks run in your browser: your data is not uploaded to a server. The optional AI review sends only what it reviews to Anthropic's API."
         else "Files are processed for this session only and are not stored.")
   ),
   hfc_llm_js(),

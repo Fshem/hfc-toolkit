@@ -12,8 +12,9 @@ prioritised list of issues to follow up, an enumerator ranking and the full Exce
 
 The app wraps the functions in `R/` without changing them. On every push to `main`, the
 `publish-app` workflow builds it with [Shinylive](https://posit-dev.github.io/r-shinylive/) and
-publishes it to GitHub Pages, where it runs entirely in the browser: uploaded data never leaves
-the user's computer.
+publishes it to GitHub Pages, where the checks run entirely in the browser and uploaded data is not sent
+to any server. The optional AI review sends only the answers it reviews (or, for briefings, issue counts)
+to Anthropic's API, using the user's own key.
 
 On top of the rule-based checks, the app adds:
 
