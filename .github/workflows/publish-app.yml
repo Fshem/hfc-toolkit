@@ -1,0 +1,63 @@
+name: Publish HFC Checker
+
+# Builds the Shiny app in app/ with Shinylive so it runs in the browser (webR),
+# and publishes it to GitHub Pages. Runs on every push to main.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          use-public-rspm: true
+
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          packages: |
+            any::shinylive
+            any::shiny
+            any::bslib
+            any::haven
+            any::readxl
+            any::openxlsx
+
+      - name: Assemble the app folder
+        run: |
+          mkdir -p build/app/hfc build/app/sample/data build/app/sample/excel/exercise build/app/sample/excel/templates
+          cp app/app.R app/engine.R build/app/
+          cp R/*.R build/app/hfc/
+          cp inst/data/household_survey.dta build/app/sample/data/
+          cp inst/excel/exercise/hfc_inputs_exercise.xlsm build/app/sample/excel/exercise/
+          cp inst/excel/templates/hfc_inputs.xlsm build/app/sample/excel/templates/
+
+      - name: Export with Shinylive
+        run: Rscript -e 'shinylive::export("build/app", "site")'
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
