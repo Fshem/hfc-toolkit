@@ -10,6 +10,7 @@ if (FALSE) { library(haven); library(readxl); library(openxlsx) }   # tells Shin
 
 app_dir <- if (dir.exists("hfc")) "hfc" else "../R"        # hfc/ is filled by the build step
 source(if (file.exists("engine.R")) "engine.R" else "app/engine.R")
+for (f in c("ml.R", "llm.R")) source(if (file.exists(f)) f else file.path("app", f))
 hfc_app_load_toolkit(app_dir)
 sample_dir <- if (dir.exists("sample")) "sample" else "../inst"
 in_browser <- grepl("emscripten", R.version$platform, fixed = TRUE)
@@ -140,6 +141,7 @@ ui <- page_sidebar(
         if (in_browser) "Runs entirely in your browser. Your data is not uploaded to any server."
         else "Files are processed for this session only and are not stored.")
   ),
+  hfc_llm_js(),
   uiOutput("main")
 )
 
@@ -182,7 +184,24 @@ server <- function(input, output, session) {
                  cons_vals = input$cons_vals, classic_outliers = input$compat)
     r <- tryCatch(suppressMessages(hfc_app_run(rv$data, map, inputs = rv$inputs, opts = opts)),
                   error = function(e) { rv$error <- conditionMessage(e); NULL })
-    if (!is.null(r)) { rv$result <- r; rv$issues <- build_issues(r); rv$enums <- enum_table(r, rv$issues) }
+    if (!is.null(r)) {
+      rv$result <- r; iss <- build_issues(r)
+      rv$iv <- tryCatch(hfc_ml_interviews(r, iss), error = function(e) NULL)
+      fl <- if (is.null(rv$iv)) NULL else rv$iv[rv$iv$flagged, ]
+      if (!is.null(fl) && nrow(fl)) {
+        iss$severity <- as.character(iss$severity)
+        iss <- rbind(iss, data.frame(check = "Unusual interview (ML)", severity = "Medium", id = fl$id,
+                                     enumerator = fl$enumerator, date = fl$date, variable = "",
+                                     value = sprintf("score %.2f", fl$`anomaly score`), detail = fl$`main reasons`,
+                                     stringsAsFactors = FALSE))
+        iss$severity <- factor(iss$severity, c("High", "Medium", "Low"))
+        iss <- iss[order(iss$severity, iss$check, iss$enumerator, iss$id), ]; rownames(iss) <- NULL
+      }
+      rv$issues <- iss
+      rv$ev <- tryCatch(hfc_ml_enumerators(r, rv$iv), error = function(e) NULL)
+      rv$enums <- enum_table(r, rv$issues)
+      rv$llm_os <- NULL; rv$llm_brief <- NULL; rv$llm_status <- NULL
+    }
   })
 
   output$template <- downloadHandler("hfc_inputs.xlsm", function(file)
@@ -240,6 +259,19 @@ server <- function(input, output, session) {
           p(class = "text-muted small", "Issues per enumerator from the checks above, with dashboard rates. Sorted by issues per submission."),
           div(class = "mb-2", downloadButton("dl_enum", "Enumerator dashboard (Excel)", class = "btn-sm")),
           div(class = "table-responsive", tableOutput("t_enum"))),
+        nav_panel("Unusual interviews (ML)",
+          p(class = "text-muted small", "An isolation forest scores every interview on its overall pattern: length, don't know and",
+            "refused answers, issues found by the checks, start time, how typical the answers are, how closely it matches",
+            "another interview by the same enumerator, and distance from the enumerator's usual area. It finds interviews",
+            "that pass every single rule but look unlike the rest. Flagged: the top 5%, plus near-identical copies."),
+          if (is.null(rv$iv)) p("Not enough data to score interviews.") else div(class = "table-responsive", tableOutput("t_iv"))),
+        nav_panel("Enumerator patterns (ML)",
+          p(class = "text-muted small", "How far each enumerator's answers sit from everyone else's, averaged over the closed",
+            "questions (Jensen-Shannon divergence). Large differences can mean fabrication, leading questions or a",
+            "misunderstood question, so they are a reason to look, not proof. Review when the divergence z-score is 3 or",
+            "more, or when 20% or more of their interviews are flagged."),
+          if (is.null(rv$ev)) p("Needs at least three enumerators with 10 or more interviews.") else div(class = "table-responsive", tableOutput("t_ev"))),
+        nav_panel("AI review", ai_ui()),
         nav_panel("Missing data",
           p(class = "text-muted small", "Variables with missing values, most missing first."),
           div(class = "table-responsive", tableOutput("t_missing"))),
@@ -250,6 +282,56 @@ server <- function(input, output, session) {
       )
     )
   }
+
+  ai_ui <- function() tagList(
+    p("Optional. Uses a large language model through your own Anthropic API key. The key stays in this browser",
+      "tab and is sent only to Anthropic."),
+    div(class = "d-flex flex-wrap gap-2 align-items-end mb-3",
+      div(tags$label(`for` = "llm_key", class = "form-label small mb-1", "Anthropic API key"),
+          tags$input(id = "llm_key", type = "password", class = "form-control", style = "width:300px",
+                     autocomplete = "off", placeholder = "sk-ant-...")),
+      selectInput("llm_model", "Model", hfc_llm_models, width = "260px")),
+    div(class = "d-flex flex-wrap gap-2 mb-2",
+      actionButton("llm_os", "Review other-specify answers", class = "btn-outline-primary btn-sm"),
+      actionButton("llm_brief", "Write supervisor briefing", class = "btn-outline-primary btn-sm")),
+    div(class = "form-text mb-3",
+      "Other-specify review sends the question text, its choices and the typed answers (no IDs or names columns,",
+      "though respondents sometimes type names into answers). The briefing sends only issue counts per enumerator."),
+    uiOutput("llm_status"),
+    uiOutput("llm_os_ui"),
+    uiOutput("llm_brief_ui"))
+
+  observeEvent(input$llm_os, {
+    items <- hfc_llm_specify_items(rv$result)
+    if (is.null(items)) { rv$llm_status <- "No other-specify answers to review. Upload a check settings workbook with an 'other specify' sheet."; return() }
+    rv$llm_items <- items; rv$llm_status <- sprintf("Reviewing %d distinct answers...", nrow(items))
+    session$sendCustomMessage("hfc_llm", list(task = "os", model = input$llm_model, json = TRUE,
+                                              prompt = hfc_llm_specify_prompt(items), max_tokens = 12000))
+  })
+  observeEvent(input$llm_brief, {
+    req(rv$enums); rv$llm_status <- "Writing the briefing..."
+    session$sendCustomMessage("hfc_llm", list(task = "brief", model = input$llm_model, json = FALSE,
+                                              prompt = hfc_llm_briefing_prompt(rv$enums, rv$iv), max_tokens = 3000))
+  })
+  observeEvent(input$llm_result, {
+    x <- input$llm_result
+    if (!is.null(x$error)) { rv$llm_status <- paste("The AI review did not run:", x$error); return() }
+    rv$llm_status <- NULL
+    if (identical(x$task, "os")) rv$llm_os <- hfc_llm_parse_items(x$items, rv$llm_items) else rv$llm_brief <- x$text
+  })
+  output$llm_status <- renderUI(if (!is.null(rv$llm_status)) div(class = "alert alert-info py-2", rv$llm_status))
+  output$llm_os_ui <- renderUI({ req(rv$llm_os); tagList(h5("Other-specify suggestions"),
+    p(class = "text-muted small", "Suggestions to check before recoding. Paste the ones you accept into the specifyrecode workbook."),
+    downloadButton("dl_llm_os", "Suggestions (CSV)", class = "btn-sm mb-2"),
+    div(class = "table-responsive", tableOutput("t_llm_os"))) })
+  output$t_llm_os <- renderTable(rv$llm_os, striped = TRUE, spacing = "s", na = "")
+  output$dl_llm_os <- downloadHandler(function() paste0("other_specify_suggestions_", Sys.Date(), ".csv"),
+    function(file) utils::write.csv(rv$llm_os, file, row.names = FALSE, na = ""))
+  output$llm_brief_ui <- renderUI({ req(rv$llm_brief); tagList(h5("Supervisor briefing"),
+    p(class = "text-muted small", "Generated from the counts above. Check it against the tables before sharing."),
+    div(class = "border rounded p-3 bg-white", HTML(markdown(rv$llm_brief)))) })
+  output$t_iv <- renderTable({ x <- rv$iv; x$flagged <- ifelse(x$flagged, "Yes", ""); utils::head(x, 100) }, striped = TRUE, spacing = "s", na = "")
+  output$t_ev <- renderTable(rv$ev, striped = TRUE, spacing = "s", na = "")
 
   filtered <- reactive({
     x <- rv$issues; req(x)

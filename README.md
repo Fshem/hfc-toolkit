@@ -15,6 +15,18 @@ The app wraps the functions in `R/` without changing them. On every push to `mai
 publishes it to GitHub Pages, where it runs entirely in the browser: uploaded data never leaves
 the user's computer.
 
+On top of the rule-based checks, the app adds:
+
+* **Unusual interviews (ML):** an isolation forest (`app/ml.R`, base R) scores every submission on its overall
+  pattern: length, don't know and refused answers, issues found by the checks, start time, answer typicality,
+  similarity to the enumerator's other interviews, and distance from the enumerator's usual area. Near-identical
+  interviews are flagged directly, since clustered copies can mask each other in the forest.
+* **Enumerator answer patterns (ML):** Jensen-Shannon divergence between each enumerator's answer distributions
+  and everyone else's, across the closed questions, with robust z-scores to show who stands out.
+* **AI review (optional, LLM):** with the user's own Anthropic API key (`app/llm.R`), suggests how to recode
+  "other, specify" answers into existing choices and writes a plain-language briefing for supervisors from the
+  issue counts. The call is made from the browser; the key is not passed to R or stored.
+
 To run it locally:
 
 ```r

@@ -39,7 +39,7 @@ jobs:
       - name: Assemble the app folder
         run: |
           mkdir -p build/app/hfc build/app/sample/data build/app/sample/excel/exercise build/app/sample/excel/templates
-          cp app/app.R app/engine.R build/app/
+          cp app/*.R build/app/
           cp R/*.R build/app/hfc/
           cp inst/data/household_survey.dta build/app/sample/data/
           cp inst/excel/exercise/hfc_inputs_exercise.xlsm build/app/sample/excel/exercise/
