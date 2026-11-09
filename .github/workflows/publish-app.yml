@@ -48,6 +48,17 @@ jobs:
       - name: Export with Shinylive
         run: Rscript -e 'shinylive::export("build/app", "site")'
 
+      - name: Add a loading message
+        run: |
+          python3 - <<'PY'
+          p = "site/index.html"; s = open(p, encoding="utf-8").read()
+          note = """<div id="hfc-loading" style="position:fixed;left:50%;top:calc(50% + 70px);transform:translateX(-50%);max-width:92vw;text-align:center;font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;color:#3d4a44;z-index:9999">
+          <strong>Starting HFC Checker</strong><br>R is loading in your browser. The first visit takes up to a minute; later visits are quicker.</div>
+          <script>(function(){var n=document.getElementById('hfc-loading'),t0=Date.now();var iv=setInterval(function(){var f=document.querySelector('iframe');var ready=false;try{ready=!!(f&&f.contentDocument&&f.contentDocument.querySelector('.bslib-sidebar-layout,.sidebar'));}catch(e){}if(ready||Date.now()-t0>180000){n&&n.remove();clearInterval(iv);}},500);})();</script>"""
+          s = s.replace("</body>", note + "\n</body>", 1)
+          open(p, "w", encoding="utf-8").write(s)
+          PY
+
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site

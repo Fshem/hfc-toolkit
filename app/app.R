@@ -11,7 +11,17 @@ if (FALSE) { library(haven); library(readxl); library(openxlsx) }   # tells Shin
 app_dir <- if (dir.exists("hfc")) "hfc" else "../R"        # hfc/ is filled by the build step
 source(if (file.exists("engine.R")) "engine.R" else "app/engine.R")
 for (f in c("ml.R", "llm.R")) source(if (file.exists(f)) f else file.path("app", f))
-hfc_app_load_toolkit(app_dir)
+# The checks need haven, readxl and openxlsx, which are slow to load in the browser.
+# Load them on first use so the interface appears as soon as R is ready.
+toolkit_ready <- FALSE
+ensure_toolkit <- function() {
+  if (toolkit_ready) return(invisible(TRUE))
+  withProgress(message = "Loading the checks (first time only)...", value = 0.5, {
+    suppressPackageStartupMessages(hfc_app_load_toolkit(app_dir))
+  })
+  toolkit_ready <<- TRUE
+  invisible(TRUE)
+}
 sample_dir <- if (dir.exists("sample")) "sample" else "../inst"
 in_browser <- grepl("emscripten", R.version$platform, fixed = TRUE)
 options(shiny.maxRequestSize = 200 * 1024^2)
@@ -157,11 +167,13 @@ server <- function(input, output, session) {
   }
 
   observeEvent(input$data, {
+    ensure_toolkit()
     rv$error <- NULL; rv$result <- NULL
     d <- tryCatch(hfc_app_read(input$data$datapath, input$data$name), error = function(e) { rv$error <- conditionMessage(e); NULL })
     if (!is.null(d)) { rv$data <- d; rv$name <- input$data$name; set_columns(d) }
   })
   observeEvent(input$sample, {
+    ensure_toolkit()
     rv$error <- NULL; rv$result <- NULL
     d <- hfc_app_read(file.path(sample_dir, "data/household_survey.dta"))
     rv$data <- d; rv$name <- "Sample household survey (household_survey.dta)"
@@ -175,7 +187,7 @@ server <- function(input, output, session) {
   })
 
   observeEvent(input$run, {
-    req(rv$data)
+    req(rv$data); ensure_toolkit()
     rv$error <- NULL
     map <- list(key = input$key, id = input$id, enum = input$enum, team = input$team, date = input$date,
                 duration = input$duration, consent = input$consent, formversion = input$formversion,
